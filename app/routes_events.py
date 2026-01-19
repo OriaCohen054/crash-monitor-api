@@ -15,7 +15,7 @@ router = APIRouter(prefix="/events", tags=["events"])
 
 
 def _now_iso() -> str:
-    """Server-side creation time."""
+    """Server-side creation time (UTC ISO format)."""
     return datetime.now(timezone.utc).isoformat()
 
 
@@ -48,7 +48,13 @@ async def create_event(payload: EventIn):
 
         res = await events_collection().insert_one(doc)
         saved = await events_collection().find_one({"_id": res.inserted_id})
+
+        if not saved:
+            # Extremely rare, but better than returning None and crashing
+            raise HTTPException(status_code=500, detail="Failed to read inserted event")
+
         return _to_event_out(saved)
+
     except PyMongoError as e:
         raise HTTPException(status_code=500, detail=f"DB error: {str(e)}")
 
@@ -76,15 +82,23 @@ async def list_events(
     if event_type:
         q["event_type"] = event_type
 
-    docs = (
-        await events_collection()
-        .find(q)
-        .sort("created_at", -1)
-        .skip(skip)
-        .limit(limit)
-        .to_list(length=limit)
-    )
-    return [_to_event_out(d) for d in docs]
+    try:
+        cursor = (
+            events_collection()
+            .find(q)
+            .sort("created_at", -1)
+            .skip(skip)
+            .limit(limit)
+        )
+
+        docs = await cursor.to_list(length=limit)
+        return [_to_event_out(d) for d in docs]
+
+    except PyMongoError as e:
+        raise HTTPException(status_code=500, detail=f"DB error: {str(e)}")
+    except Exception as e:
+        # Catch unexpected issues (e.g., wrong object type, cursor issues, etc.)
+        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
 
 @router.get("/{event_id}", response_model=EventOut)
@@ -100,7 +114,11 @@ async def get_event_by_id(event_id: str):
             detail="Invalid event_id format (expected Mongo ObjectId)",
         )
 
-    doc = await events_collection().find_one({"_id": ObjectId(event_id)})
+    try:
+        doc = await events_collection().find_one({"_id": ObjectId(event_id)})
+    except PyMongoError as e:
+        raise HTTPException(status_code=500, detail=f"DB error: {str(e)}")
+
     if not doc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
