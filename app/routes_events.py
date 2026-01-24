@@ -1,4 +1,3 @@
-# app/routes_events.py
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone
 
@@ -9,7 +8,6 @@ from pymongo.errors import PyMongoError
 from app.db import events_collection
 from app.models import EventIn, EventOut
 from app.security import require_api_key
-
 
 router = APIRouter(prefix="/events", tags=["events"])
 
@@ -28,12 +26,20 @@ def _model_dump(obj) -> Dict[str, Any]:
     return obj.dict()               # Pydantic v1
 
 
+def _doc_to_payload(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract the event payload fields from a Mongo document."""
+    return {k: v for k, v in doc.items() if k not in ("_id", "created_at")}
+
+
 def _to_event_out(doc: Dict[str, Any]) -> EventOut:
-    """Convert Mongo document to API response model."""
+    """
+    Convert Mongo document to API response model:
+    returns { id, created_at, payload: {...} }
+    """
     return EventOut(
         id=str(doc["_id"]),
         created_at=doc.get("created_at", ""),
-        **{k: v for k, v in doc.items() if k not in ("_id", "created_at")},
+        payload=_doc_to_payload(doc),
     )
 
 
@@ -41,22 +47,25 @@ def _to_event_out(doc: Dict[str, Any]) -> EventOut:
 async def create_event(payload: EventIn):
     """
     Ingest a new crash/event (protected by API key).
+    Stores payload fields flat in Mongo (as you already do),
+    but returns EventOut wrapper with payload.
     """
     try:
-        doc = _model_dump(payload)
+        doc = _model_dump(payload)          # <-- flat fields
         doc["created_at"] = _now_iso()
 
         res = await events_collection().insert_one(doc)
         saved = await events_collection().find_one({"_id": res.inserted_id})
 
         if not saved:
-            # Extremely rare, but better than returning None and crashing
             raise HTTPException(status_code=500, detail="Failed to read inserted event")
 
         return _to_event_out(saved)
 
     except PyMongoError as e:
         raise HTTPException(status_code=500, detail=f"DB error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
 
 @router.get("", response_model=List[EventOut])
@@ -69,10 +78,6 @@ async def list_events(
 ):
     """
     List events with optional filters and pagination.
-
-    Examples:
-    - /events?limit=20
-    - /events?app_id=demo-app&level=error
     """
     q: Dict[str, Any] = {}
     if app_id:
@@ -97,7 +102,6 @@ async def list_events(
     except PyMongoError as e:
         raise HTTPException(status_code=500, detail=f"DB error: {str(e)}")
     except Exception as e:
-        # Catch unexpected issues (e.g., wrong object type, cursor issues, etc.)
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
 
