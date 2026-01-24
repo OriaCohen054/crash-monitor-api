@@ -1,5 +1,5 @@
 # app/models.py
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from pydantic import BaseModel, Field
 
 
@@ -15,9 +15,11 @@ class DeviceInfo(BaseModel):
 class AppInfo(BaseModel):
     """App build/version details."""
     version_name: Optional[str] = None
-    version_code: Optional[str] = None
+    # accept both "123" and 123 from clients (avoid 422 on stricter parsing)
+    version_code: Optional[Union[str, int]] = None
     build_type: Optional[str] = None       # debug/release
     package_name: Optional[str] = None
+    display_name: Optional[str] = None
 
 
 class SdkInfo(BaseModel):
@@ -27,11 +29,18 @@ class SdkInfo(BaseModel):
 
 
 class Breadcrumb(BaseModel):
-    """Small timeline records before crash."""
+    """Small timeline record."""
     ts: Optional[str] = None
     category: Optional[str] = None
-    message: Optional[str] = None
-    data: Dict[str, Any] = Field(default_factory=dict)
+    message: str
+    data: Optional[Dict[str, Any]] = None
+
+
+class MetaInfo(BaseModel):
+    """Client metadata + custom props."""
+    client_event_id: Optional[str] = None
+    name: Optional[str] = None
+    props: Optional[Dict[str, Any]] = None
 
 
 class EventIn(BaseModel):
@@ -57,18 +66,22 @@ class EventIn(BaseModel):
     app: Optional[AppInfo] = None
     sdk: Optional[SdkInfo] = None
 
-    # Useful additional data
+    # Identity
     user_id: Optional[str] = None
     device_id: Optional[str] = None
 
-    tags: Dict[str, str] = Field(default_factory=dict, description="Key-value tags")
-    breadcrumbs: List[Breadcrumb] = Field(default_factory=list)
+    # Flexible key/values
+    tags: Optional[Dict[str, str]] = None
 
-    # Free-form extras
-    meta: Dict[str, Any] = Field(default_factory=dict, description="Custom metadata")
+    # Timeline
+    breadcrumbs: Optional[List[Breadcrumb]] = None
+
+    # Arbitrary meta
+    meta: Optional[Dict[str, Any]] = None
 
 
-class EventOut(EventIn):
-    """Event model returned to clients."""
+class EventOut(BaseModel):
+    """Outgoing event record from DB."""
     id: str
     created_at: str
+    payload: EventIn
