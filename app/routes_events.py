@@ -1,4 +1,4 @@
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -54,9 +54,32 @@ async def list_events(
     app_id: Optional[str] = Query(default=None),
     level: Optional[str] = Query(default=None),
     event_type: Optional[str] = Query(default=None),
-    limit: int = Query(default=50, ge=1, le=200),
-    skip: int = Query(default=0, ge=0),
+    limit: Union[int, str] = Query(default=50),
+    skip: Union[int, str] = Query(default=0),
 ):
+    # Retool (or clients) sometimes send skip/limit as strings.
+    # This keeps the endpoint stable instead of returning 422.
+    def _to_int(v, default: int) -> int:
+        try:
+            if v is None:
+                return default
+            if isinstance(v, int):
+                return v
+            return int(str(v).strip())
+        except Exception:
+            return default
+
+    limit_i = _to_int(limit, 50)
+    skip_i = _to_int(skip, 0)
+
+    # Keep the same safety bounds as before (1..200) and non-negative skip
+    if limit_i < 1:
+        limit_i = 50
+    if limit_i > 200:
+        limit_i = 200
+    if skip_i < 0:
+        skip_i = 0
+
     q: Dict[str, Any] = {}
     if app_id:
         q["app_id"] = app_id
@@ -70,12 +93,13 @@ async def list_events(
             events_collection()
             .find(q)
             .sort("created_at", -1)
-            .skip(skip)
-            .limit(limit)
+            .skip(skip_i)
+            .limit(limit_i)
         )
 
-        docs = await cursor.to_list(length=limit)
+        docs = await cursor.to_list(length=limit_i)
         return [_to_event_out(d) for d in docs]
 
     except PyMongoError as e:
         raise HTTPException(status_code=500, detail=f"DB error: {str(e)}")
+
